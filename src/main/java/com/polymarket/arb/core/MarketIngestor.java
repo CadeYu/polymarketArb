@@ -22,9 +22,6 @@ public class MarketIngestor {
     private final PolymarketApiClient apiClient;
     private final MarketSnapshotCache cache;
 
-    // Rate Limiter: Max 10 requests per second (Token Bucket simplified)
-    private final RateLimiter strictRateLimiter = new RateLimiter(10.0);
-
     @Scheduled(fixedDelay = 10000)
     public void ingestMarkets() {
         log.info("Starting full market ingestion...");
@@ -43,7 +40,6 @@ public class MarketIngestor {
 
                     java.util.stream.StreamSupport.stream(marketsParams.spliterator(), false)
                             .forEach(node -> executor.submit(() -> {
-                                strictRateLimiter.acquire(); // Enforce TPS
                                 processMarket(node);
                             }));
 
@@ -129,41 +125,6 @@ public class MarketIngestor {
 
         } catch (Exception e) {
             log.warn("Failed to process market {}: {}", node.path("id").asText(), e.getMessage());
-        }
-    }
-
-    // Simple standalone RateLimiter class to imply usage
-    private static class RateLimiter {
-        private final double permitsPerSecond;
-        private long lastSync = System.nanoTime();
-        private double storedPermits = 0.0;
-
-        public RateLimiter(double permitsPerSecond) {
-            this.permitsPerSecond = permitsPerSecond;
-        }
-
-        public synchronized void acquire() {
-            long now = System.nanoTime();
-            double newPermits = (now - lastSync) / 1_000_000_000.0 * permitsPerSecond;
-            storedPermits = Math.min(permitsPerSecond, storedPermits + newPermits);
-            lastSync = now;
-
-            if (storedPermits >= 1.0) {
-                storedPermits -= 1.0;
-                return;
-            }
-
-            double missing = 1.0 - storedPermits;
-            long waitNanos = (long) (missing / permitsPerSecond * 1_000_000_000.0);
-
-            try {
-                java.util.concurrent.TimeUnit.NANOSECONDS.sleep(waitNanos);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-
-            lastSync = System.nanoTime();
-            storedPermits = 0;
         }
     }
 

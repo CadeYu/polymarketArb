@@ -108,7 +108,12 @@ public class PolymarketApiClient {
         }
     }
 
+    // Global Rate Limiter: 4 requests per second
+    private final RateLimiter rateLimiter = new RateLimiter(4.0);
+
     private JsonNode executeRequest(String url) {
+        rateLimiter.acquire(); // Block until permit is available
+
         Request request = new Request.Builder()
                 .url(url)
                 .header("User-Agent", "PolymarketArbBot/1.0")
@@ -116,6 +121,7 @@ public class PolymarketApiClient {
 
         try (Response response = httpClient.newCall(request).execute()) {
             if (!response.isSuccessful()) {
+                // If 429, maybe sleep and retry? For now fail fast but log clearly.
                 throw new RuntimeException("API Request failed: " + response.code() + " " + response.message());
             }
             if (response.body() == null) {
@@ -124,6 +130,43 @@ public class PolymarketApiClient {
             return objectMapper.readTree(response.body().string());
         } catch (IOException e) {
             throw new RuntimeException("Failed to call API: " + url, e);
+        }
+    }
+
+    /**
+     * Simple Token Bucket Rate Limiter
+     */
+    private static class RateLimiter {
+        private final double permitsPerSecond;
+        private long lastSync = System.nanoTime();
+        private double storedPermits = 0.0;
+
+        public RateLimiter(double permitsPerSecond) {
+            this.permitsPerSecond = permitsPerSecond;
+        }
+
+        public synchronized void acquire() {
+            long now = System.nanoTime();
+            double newPermits = (now - lastSync) / 1_000_000_000.0 * permitsPerSecond;
+            storedPermits = Math.min(1.0, storedPermits + newPermits); // Max burst 1.0
+            lastSync = now;
+
+            if (storedPermits >= 1.0) {
+                storedPermits -= 1.0;
+                return;
+            }
+
+            double missing = 1.0 - storedPermits;
+            long waitNanos = (long) (missing / permitsPerSecond * 1_000_000_000.0);
+
+            try {
+                TimeUnit.NANOSECONDS.sleep(waitNanos);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+
+            lastSync = System.nanoTime();
+            storedPermits = 0;
         }
     }
 }
