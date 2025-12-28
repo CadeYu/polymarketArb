@@ -33,10 +33,13 @@ public class MarketIngestor {
             // Use virtual threads for parallelism, but rate limited
             try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
                 for (int offset = 0; totalFetched < maxToFetch; offset += limit) {
+                    log.info("Fetching markets batch offset: {}...", offset);
                     JsonNode marketsParams = apiClient.getMarkets(limit, String.valueOf(offset));
                     if (marketsParams == null || !marketsParams.isArray() || marketsParams.size() == 0) {
                         break;
                     }
+
+                    log.info("Processing {} markets in batch (filtering active)...", marketsParams.size());
 
                     java.util.stream.StreamSupport.stream(marketsParams.spliterator(), false)
                             .forEach(node -> executor.submit(() -> {
@@ -124,12 +127,15 @@ public class MarketIngestor {
             cache.updateMarket(market);
 
         } catch (Exception e) {
-            log.warn("Failed to process market {}: {}", node.path("id").asText(), e.getMessage());
+            log.warn("Failed to process market {}", node.path("id").asText(), e);
         }
     }
 
     private OrderBook fetchOrderBook(String tokenId) {
         JsonNode bookNode = apiClient.getOrderBook(tokenId);
+        if (bookNode == null) {
+            return OrderBook.builder().marketId(tokenId).bids(new ArrayList<>()).asks(new ArrayList<>()).build();
+        }
         List<OrderBook.OrderLevel> bids = parseLevels(bookNode.path("bids"));
         List<OrderBook.OrderLevel> asks = parseLevels(bookNode.path("asks"));
         return OrderBook.builder().marketId(tokenId).bids(bids).asks(asks).build();
